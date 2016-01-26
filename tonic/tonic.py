@@ -47,18 +47,20 @@ class FakeNcVar(np.ndarray):
 
 # -------------------------------------------------------------------- #
 def latlon2yx(plats, plons, glats, glons):
-    """find y x coordinates """
+    """find y x coordinates"""
 
     if glons.ndim == 1 or glats.ndim == 1:
         glons, glats = np.meshgrid(glons, glats)
 
-    combined = np.dstack(([glats.ravel(), glons.ravel()]))[0]
-    points = list(np.vstack((np.array(plats), np.array(plons))).transpose())
+    xs, ys, zs = lon_lat_to_cartesian(glons.flatten(), glats.flatten())
+    xt, yt, zt = lon_lat_to_cartesian(plons.flatten(), plats.flatten())
+    tree = cKDTree(zip(xs, ys, zs))
 
-    mytree = cKDTree(combined)
-    dist, indexes = mytree.query(points, k=1)
-    y, x = np.unravel_index(np.array(indexes), glons.shape)
-    return y, x
+    inds = tree.query(zip(xt, yt, zt), k=1)[1]
+
+    yinds, xinds = np.unravel_index(inds, glons.shape)
+
+    return yinds, xinds
 # -------------------------------------------------------------------- #
 
 
@@ -112,25 +114,24 @@ def get_grid_inds(domain, points):
     lons = points.get_lons()
     lats = points.get_lats()
 
-    if (lons.min() < 0) and (domain['lon'].min() >= 0):
-        posinds = np.nonzero(lons < 0)
-        lons[posinds] += 360
-        print('adjusted VIC lon minimum (+360 for negative lons)')
-
-    # Make sure the longitude / latitude vars are 2d
-    if domain['lat'].ndim == 1 or domain['lon'].ndim == 1:
-        dlons, dlats = np.meshgrid(domain['lon'], domain['lat'])
-
-    combined = np.dstack(([dlats.ravel(), dlons.ravel()]))[0]
-    point_list = list(np.vstack((lats, lons)).transpose())
-
-    mytree = cKDTree(combined)
-    dist, indexes = mytree.query(point_list, k=1)
-
-    yinds, xinds = np.unravel_index(indexes, dlons.shape)
+    yinds, xinds = latlon2yx(lats, lons, domain['lat'], domain['lon'])
 
     points.add_xs(xinds)
     points.add_ys(yinds)
 
     return points
 # -------------------------------------------------------------------- #
+
+
+def lon_lat_to_cartesian(lon, lat, radius=1):
+    """
+    calculates lon, lat coordinates of a point on a sphere with
+    radius R
+    """
+    lon_r = np.radians(lon)
+    lat_r = np.radians(lat)
+
+    x = radius * np.cos(lat_r) * np.cos(lon_r)
+    y = radius * np.cos(lat_r) * np.sin(lon_r)
+    z = radius * np.sin(lat_r)
+    return x, y, z
