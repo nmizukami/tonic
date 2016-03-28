@@ -17,7 +17,7 @@ from getpass import getuser
 from collections import OrderedDict
 from warnings import warn
 from tonic.io import read_netcdf
-from tonic.pycompat import pyrange, pyzip
+from tonic.pycompat import pyrange
 import re
 
 
@@ -145,14 +145,12 @@ class Cols(object):
             self.soil_param['July_Tavg'] = np.array([i])
             i += 1
 
-
         # Snow Parameters
         self.snow_param = OrderedDict([('cellnum', np.array([0]))])
         i = 1
         for var in ['AreaFract', 'elevation', 'Pfactor']:
             self.snow_param[var] = np.arange(i, i + snow_bands)
             i += snow_bands
-
 
         # Veg Library
         self.veglib = OrderedDict([('Veg_class', np.array([0])),
@@ -683,8 +681,8 @@ def make_grid(grid_file, soil_file, snow_file, vegl_file, veg_file,
     if vegl_file:
         veglib_dict, lib_bare_idx = veg_class(vegl_file,
                                               veglib_photo=veglib_photo,
-                                    c=Cols(veglib_fcan=veglib_fcan,
-                                           veglib_photo=veglib_photo))
+                                              c=Cols(veglib_fcan=veglib_fcan,
+                                                     veglib_photo=veglib_photo))
         veg_classes = len(veglib_dict['Veg_class'])
     else:
         veglib_dict = False
@@ -721,6 +719,7 @@ def make_grid(grid_file, soil_file, snow_file, vegl_file, veg_file,
                             lai_src, fcan_src, alb_src)
 
     if nc_file:
+        print('writing netcdf')
         write_netcdf(nc_file, target_attrs, target_grid,
                      grid_dict['soil_dict'], grid_dict['snow_dict'],
                      grid_dict['veg_dict'], grid_dict['lake_dict'],
@@ -813,18 +812,16 @@ def latlon2yx(plats, plons, glats, glons):
     # use astronomical conventions for longitude
     # (i.e. negative longitudes to the east of 0)
     if (glons.max() > 180):
-        posinds = np.nonzero(glons > 180)
-        glons[posinds] -= 360
+        glons[glons > 180] -= 360
         print('adjusted grid lon minimum ')
 
     if (plons.max() > 180):
-        posinds = np.nonzero(plons > 180)
-        plons[posinds] -= 360
+        plons[plons > 180] -= 360
         print('adjusted points lon minimum')
 
     if glons.ndim == 1 or glats.ndim == 1:
         print('creating 2d coordinate arrays')
-        glats, glons = np.meshgrid(glats, glons, indexing='ij')
+        glons, glats = np.meshgrid(glons, glats)
 
     combined = np.dstack(([glats.ravel(), glons.ravel()]))[0]
     points = list(np.vstack((np.array(plats), np.array(plons))).transpose())
@@ -869,14 +866,7 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
     else:
         out_dicts['lake_dict'] = False
 
-    # get "unmasked" mask
-    mask = target_grid['mask']
-
-    ysize, xsize = target_grid['mask'].shape
-
-    ymask, xmask = np.nonzero(mask != 1)
-
-    print('{0} masked values'.format(len(ymask)))
+    d_shape = target_grid['mask'].shape
 
     for name, mydict in in_dicts.items():
         out_dict = OrderedDict()
@@ -893,33 +883,29 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
                 dtype = np.float
 
             if mydict[var].ndim == 1:
-                out_dict[var] = np.ma.zeros((ysize, xsize),
-                                            dtype=dtype)
+                out_dict[var] = np.full(d_shape, fill_val, dtype=dtype)
                 out_dict[var][yi, xi] = mydict[var]
-                out_dict[var][ymask, xmask] = fill_val
 
             elif mydict[var].ndim == 2:
-                steps = mydict[var].shape[1]
-                out_dict[var] = np.ma.zeros((steps, ysize, xsize),
-                                            dtype=dtype)
-                for i in pyrange(steps):
+                shape = (mydict[var].shape[1], ) + d_shape
+                out_dict[var] = np.full(shape, fill_val, dtype=dtype)
+                for i in pyrange(shape[0]):
                     out_dict[var][i, yi, xi] = mydict[var][:, i]
-                out_dict[var][:, ymask, xmask] = fill_val
 
             elif mydict[var].ndim == 3:
-                j = mydict[var].shape[1]
-                k = mydict[var].shape[2]
-                out_dict[var] = np.ma.zeros((j, k, ysize, xsize),
-                                            dtype=dtype)
-                for jj in pyrange(j):
-                    for kk in pyrange(k):
+                shape = mydict[var].shape[1:] + d_shape
+                out_dict[var] = np.full(shape, fill_val, dtype=dtype)
+                for jj in pyrange(shape[0]):
+                    for kk in pyrange(shape[1]):
                         out_dict[var][jj, kk, yi, xi] = mydict[var][:, jj, kk]
-                for y, x in pyzip(ymask, xmask):
-                    out_dict[var][:, :, y, x] = fill_val
 
             out_dict[var] = np.ma.masked_values(out_dict[var], fill_val)
 
         out_dicts[name] = out_dict
+
+    if not np.array_equal(target_grid['mask'] > 0,
+                          out_dicts['soil_dict']['run_cell'] > 0):
+        print('warning, mask and run_cell are not equal')
 
     # Merge information from veglib and veg and transfer to veg_dict
     if veglib_dict and veg_dict:
@@ -931,7 +917,6 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
 
         # Determine the final number of veg classes, accounting for
         # potential new bare soil class, and determine that class's idx
-        var = 'Cv'
         if lib_bare_idx is not None:
             # Bare soil class already exists at lib_bare_idx
             extra_class = 0
@@ -942,17 +927,15 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
         nveg_classes = out_dicts['veg_dict'][var].shape[0] + extra_class
 
         # Transfer Cv info, accounting for additional bare soil areas
-        var = 'Cv'
         shape = (nveg_classes, ) + out_dicts['veg_dict'][var].shape[1:]
-        new = np.zeros(shape)
+        new = np.full(shape, FILLVALUE_F)
         if extra_class:
-            new[:-1, :, :] = out_dicts['veg_dict'][var]
+            new[:-1, yi, xi] = out_dicts['veg_dict'][var][:, yi, xi]
         else:
-            new[:, :, :] = out_dicts['veg_dict'][var]
-        new[lib_bare_idx, :, :] += bare
+            new[:, yi, xi] = out_dicts['veg_dict'][var][:, yi, xi]
+        new[lib_bare_idx, yi, xi] = bare[yi, xi]
         # Ensure that Cvs sum to 1.0
-        new /= new.sum(axis=0)
-        new[:, ymask, xmask] = FILLVALUE_F
+        new[..., yi, xi] /= new[..., yi, xi].sum(axis=0)
         out_dicts['veg_dict'][var] = new
 
         # Distribute the vegparam variables (geographically-varying)
@@ -972,10 +955,10 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
             shape = (nveg_classes, ) + out_dicts['veg_dict'][var].shape[1:]
             new = np.full(shape, FILLVALUE_F)
             if extra_class:
-                new[:-1, :, :] = out_dicts['veg_dict'][var]
-                new[-1, :, :] = bare_vegparam[var]
+                new[:-1, ..., yi, xi] = out_dicts['veg_dict'][var][..., yi, xi]
+                new[-1, ..., yi, xi] = bare_vegparam[var]
             else:
-                new[:, :, :] = out_dicts['veg_dict'][var]
+                new[:] = out_dicts['veg_dict'][var]
             out_dicts['veg_dict'][var] = np.ma.masked_values(new, FILLVALUE_F)
 
         if blowing_snow:
@@ -983,10 +966,10 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
                 shape = (nveg_classes, ) + out_dicts['veg_dict'][var].shape[1:]
                 new = np.full(shape, FILLVALUE_F)
                 if extra_class:
-                    new[:-1, :, :] = out_dicts['veg_dict'][var]
-                    new[-1, :, :] = bare_vegparam[var]
+                    new[:-1, ..., yi, xi] = out_dicts['veg_dict'][var]
+                    new[-1, ..., yi, xi] = bare_vegparam[var]
                 else:
-                    new[:, :, :] = out_dicts['veg_dict'][var]
+                    new[..., yi, xi] = out_dicts['veg_dict'][var]
                 out_dicts['veg_dict'][var] = np.ma.masked_values(new, FILLVALUE_F)
 
         # Distribute the veglib variables
@@ -1004,19 +987,18 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
             varnames.append('NPPfactor_sat')
         for var in varnames:
             lib_var = 'lib_{0}'.format(var)
+            shape = (nveg_classes, ) + d_shape
             if var in ['Ctype', 'Nscale']:
                 fill_val = FILLVALUE_I
-                new = np.full((nveg_classes, ysize, xsize), fill_val,
-                              dtype=np.int)
+                new = np.full(shape, fill_val, dtype=np.int)
             else:
                 fill_val = FILLVALUE_F
-                new = np.full((nveg_classes, ysize, xsize), fill_val)
+                new = np.full(shape, fill_val)
             if extra_class:
                 new[:-1, yi, xi] = veglib_dict[lib_var][:, np.newaxis]
                 new[-1, yi, xi] = bare_vegparam[var]
             else:
                 new[:, yi, xi] = veglib_dict[lib_var][:, np.newaxis]
-            new[:, ymask, xmask] = fill_val
             out_dicts['veg_dict'][var] = np.ma.masked_values(new, fill_val)
 
         # 2nd - the 2d vars
@@ -1029,16 +1011,13 @@ def grid_params(soil_dict, target_grid, snow_dict, veglib_dict, veg_dict,
             varnames = ['LAI'] + varnames
         for var in varnames:
             lib_var = 'lib_{0}'.format(var)
-            shape = (nveg_classes, veglib_dict[lib_var].shape[1],
-                     ysize, xsize)
+            shape = (nveg_classes, veglib_dict[lib_var].shape[1]) + d_shape
             new = np.full(shape, FILLVALUE_F)
             if extra_class:
                 new[:-1, :, yi, xi] = veglib_dict[lib_var][:, :, np.newaxis]
                 new[-1, :, yi, xi] = bare_vegparam[var]
             else:
                 new[:, :, yi, xi] = veglib_dict[lib_var][:, :, np.newaxis]
-            for y, x in pyzip(ymask, xmask):
-                new[:, :, y, x] = fill_val
             out_dicts['veg_dict'][var] = np.ma.masked_values(new, FILLVALUE_F)
 
         # Finally, transfer veglib class descriptions (don't distribute)
@@ -1074,282 +1053,273 @@ def write_netcdf(myfile, target_attrs, target_grid,
     Reads attributes from params.py and from targetAtters dictionary read from
     grid_file
     """
-    f = Dataset(myfile, 'w', format='NETCDF4')
+    with Dataset(myfile, 'w', format='NETCDF4') as f:
 
-    # write attributes for netcdf
-    f.description = 'VIC parameter file'
-    f.history = 'Created: {0}\n'.format(tm.ctime(tm.time()))
-    f.history += ' '.join(sys.argv) + '\n'
-    f.source = sys.argv[0]  # prints the name of script used
-    f.username = getuser()
-    f.host = socket.gethostname()
+        # write attributes for netcdf
+        f.description = b'VIC parameter file'
+        history = 'Created: {0}\n'.format(tm.ctime(tm.time())) + ' '.join(sys.argv) + '\n'
+        f.history = history.encode()
+        f.source = sys.argv[0].encode()  # prints the name of script used
+        f.username = getuser().encode()
+        f.host = socket.gethostname().encode()
 
-    if lake_grid:
-        lakes = True
-    else:
-        lakes = False
-
-    unit = Units(organic_fract=organic_fract, spatial_frost=spatial_frost,
-                 spatial_snow=spatial_snow,
-                 july_tavg_supplied=july_tavg_supplied,
-                 veglib_fcan=veglib_fcan, veglib_photo=veglib_photo,
-                 blowing_snow=blowing_snow,
-                 vegparam_lai=vegparam_lai, vegparam_fcan=vegparam_fcan,
-                 vegparam_albedo=vegparam_albedo, lakes=lakes)
-    desc = Desc(organic_fract=organic_fract, spatial_frost=spatial_frost,
-                spatial_snow=spatial_snow,
-                july_tavg_supplied=july_tavg_supplied,
-                veglib_fcan=veglib_fcan, veglib_photo=veglib_photo,
-                blowing_snow=blowing_snow,
-                vegparam_lai=vegparam_lai, vegparam_fcan=vegparam_fcan,
-                vegparam_albedo=vegparam_albedo, lakes=lakes)
-
-    # target grid
-    # coordinates
-    if target_grid[XVAR].ndim == 1:
-        f.createDimension('lon', len(target_grid[XVAR]))
-        f.createDimension('lat', len(target_grid[YVAR]))
-        dims2 = ('lat', 'lon', )
-        coordinates = None
-
-        v = f.createVariable('lat', NC_DOUBLE, ('lat',))
-        v[:] = target_grid[YVAR]
-        v.units = 'degrees_north'
-        v.long_name = "latitude of grid cell center"
-
-        v = f.createVariable('lon', NC_DOUBLE, ('lon',))
-        v[:] = target_grid[XVAR]
-        v.units = 'degrees_east'
-        v.long_name = "longitude of grid cell center"
-
-    else:
-        f.createDimension('nj', target_grid[XVAR].shape[0])
-        f.createDimension('ni', target_grid[YVAR].shape[1])
-        dims2 = ('nj', 'ni', )
-        coordinates = "{0} {1}".format(XVAR, YVAR)
-
-        v = f.createVariable(YVAR, NC_DOUBLE, dims2)
-        v[:, :] = target_grid[YVAR]
-        v.units = 'degrees_north'
-
-        v = f.createVariable(XVAR, NC_DOUBLE, dims2)
-        v[:, :] = target_grid[XVAR]
-        v.units = 'degrees_east'
-
-        # corners
-        if ('xv' in target_grid) and ('yv' in target_grid):
-            f.createDimension('nv4', 4)
-            dims_corner = ('nv4', 'nj', 'ni', )
-
-            v = f.createVariable('xv', NC_DOUBLE, dims_corner)
-            v[:, :, :] = target_grid['xv']
-
-            v = f.createVariable('yv', NC_DOUBLE, dims_corner)
-            v[:, :, :] = target_grid['yv']
-
-    # mask
-    v = f.createVariable('mask', NC_DOUBLE, dims2)
-    v[:, :] = target_grid['mask']
-    v.long_name = 'land mask'
-    if coordinates:
-        v.coordinates = coordinates
-
-    # set attributes
-    for var in target_grid:
-        for name, attr in target_attrs[var].items():
-            try:
-                setattr(v, name, attr)
-            except:
-                print('dont have units or description for {0}'.format(var))
-
-    # Layers
-    f.createDimension('nlayer', soil_grid['soil_density'].shape[0])
-    layer_dims = ('nlayer', ) + dims2
-
-    v = f.createVariable('layer', NC_INT, ('nlayer', ))
-    v[:] = np.arange(1, soil_grid['soil_density'].shape[0] + 1)
-    v.long_name = 'soil layer'
-
-    # soil grid
-    for var, data in soil_grid.items():
-        print('writing var: {0}'.format(var))
-
-        if data.ndim == 1:
-            v = f.createVariable(var, NC_DOUBLE, ('nlayer', ),
-                                 fill_value=FILLVALUE_F)
-            v[:] = data
-
-        elif data.ndim == 2:
-            if var in ['gridcell', 'run_cell', 'fs_active']:
-                v = f.createVariable(var, NC_INT, dims2,
-                                     fill_value=FILLVALUE_I)
-            else:
-                v = f.createVariable(var, NC_DOUBLE, dims2,
-                                     fill_value=FILLVALUE_F)
-            v[:, :] = data
-
-        elif data.ndim == 3:
-            v = f.createVariable(var, NC_DOUBLE, layer_dims,
-                                 fill_value=FILLVALUE_F)
-            v[:, :, :] = data
+        if lake_grid:
+            lakes = True
         else:
-            raise IOError('all soil vars should be 2 or 3 dimensions')
+            lakes = False
 
-        # add attributes
-        v.units = unit.soil_param[var]
-        v.description = desc.soil_param[var]
-        v.long_name = var
+        unit = Units(organic_fract=organic_fract, spatial_frost=spatial_frost,
+                     spatial_snow=spatial_snow,
+                     july_tavg_supplied=july_tavg_supplied,
+                     veglib_fcan=veglib_fcan, veglib_photo=veglib_photo,
+                     blowing_snow=blowing_snow,
+                     vegparam_lai=vegparam_lai, vegparam_fcan=vegparam_fcan,
+                     vegparam_albedo=vegparam_albedo, lakes=lakes)
+        desc = Desc(organic_fract=organic_fract, spatial_frost=spatial_frost,
+                    spatial_snow=spatial_snow,
+                    july_tavg_supplied=july_tavg_supplied,
+                    veglib_fcan=veglib_fcan, veglib_photo=veglib_photo,
+                    blowing_snow=blowing_snow,
+                    vegparam_lai=vegparam_lai, vegparam_fcan=vegparam_fcan,
+                    vegparam_albedo=vegparam_albedo, lakes=lakes)
+
+        # target grid
+        # coordinates
+        if target_grid[XVAR].ndim == 1:
+            f.createDimension('lon', len(target_grid[XVAR]))
+            f.createDimension('lat', len(target_grid[YVAR]))
+            dims2 = ('lat', 'lon', )
+            coordinates = None
+
+            v = f.createVariable('lat', NC_DOUBLE, ('lat',))
+            v[:] = target_grid[YVAR]
+            v.units = b'degrees_north'
+            v.long_name = b'latitude of grid cell center'
+
+            v = f.createVariable('lon', NC_DOUBLE, ('lon',))
+            v[:] = target_grid[XVAR]
+            v.units = b'degrees_east'
+            v.long_name = b'longitude of grid cell center'
+
+        else:
+            f.createDimension('nj', target_grid[XVAR].shape[0])
+            f.createDimension('ni', target_grid[YVAR].shape[1])
+            dims2 = ('nj', 'ni', )
+            coordinates = "{0} {1}".format(XVAR, YVAR)
+
+            v = f.createVariable(YVAR, NC_DOUBLE, dims2)
+            v[:] = target_grid[YVAR]
+            v.units = b'degrees_north'
+
+            v = f.createVariable(XVAR, NC_DOUBLE, dims2)
+            v[:] = target_grid[XVAR]
+            v.units = b'degrees_east'
+
+            # corners
+            if ('xv' in target_grid) and ('yv' in target_grid):
+                f.createDimension('nv4', 4)
+                dims_corner = ('nv4', 'nj', 'ni', )
+
+                v = f.createVariable('xv', NC_DOUBLE, dims_corner)
+                v[:] = target_grid['xv']
+
+                v = f.createVariable('yv', NC_DOUBLE, dims_corner)
+                v[:] = target_grid['yv']
+
+        # mask
+        v = f.createVariable('mask', NC_INT, dims2)
+        v[:] = target_grid['mask']
+        v.long_name = b'land mask'
         if coordinates:
             v.coordinates = coordinates
 
-    if snow_grid:
-        try:
-            del snow_grid['gridcell']
-        except:
-            pass
+        # set attributes
+        for var in target_grid:
+            for name, attr in target_attrs[var].items():
+                try:
+                    setattr(v, name, maybe_encode(attr))
+                except:
+                    print('dont have units or description for {0}'.format(var))
 
-        f.createDimension('snow_band', snow_grid['AreaFract'].shape[0])
-        snow_dims = ('snow_band', ) + dims2
+        # Layers
+        f.createDimension('nlayer', soil_grid['soil_density'].shape[0])
+        layer_dims = ('nlayer', ) + dims2
 
-        v = f.createVariable('snow_band', NC_INT, ('snow_band', ))
-        v[:] = np.arange(1, snow_grid['AreaFract'].shape[0] + 1)
-        v.long_name = 'snow band'
+        v = f.createVariable('layer', NC_INT, ('nlayer', ))
+        v[:] = np.arange(1, soil_grid['soil_density'].shape[0] + 1)
+        v.long_name = b'soil layer'
 
-        for var, data in snow_grid.items():
+        # soil grid
+        for var, data in soil_grid.items():
             print('writing var: {0}'.format(var))
 
-            if data.ndim == 2:
-                v = f.createVariable(var, NC_DOUBLE, dims2,
+            if data.ndim == 1:
+                v = f.createVariable(var, NC_DOUBLE, ('nlayer', ),
                                      fill_value=FILLVALUE_F)
-                v[:, :] = data
-            elif data.ndim == 3:
-                v = f.createVariable(var, NC_DOUBLE, snow_dims,
-                                     fill_value=FILLVALUE_F)
-                v[:, :, :] = data
-            else:
-                raise IOError('all snow vars should be 2 or 3 dimensions')
+                v[:] = data
 
-            v.units = unit.snow_param[var]
-            v.description = desc.snow_param[var]
-            if coordinates:
-                v.coordinates = coordinates
-
-    if veg_grid:
-        try:
-            del veg_grid['gridcell']
-        except:
-            pass
-
-        f.createDimension('veg_class', veg_grid['Cv'].shape[0])
-        f.createDimension('root_zone', veg_grid['root_depth'].shape[1])
-        f.createDimension('month', MONTHS_PER_YEAR)
-
-        v = f.createVariable('veg_class', NC_INT, ('veg_class', ))
-        v[:] = np.arange(1, veg_grid['Cv'].shape[0] + 1)
-        v.long_name = 'Vegetation Class'
-
-        v = f.createVariable('veg_descr', np.dtype(str), ('veg_class', ))
-        v[:] = veg_grid['comment']
-        v.long_name = 'Vegetation Class Description'
-
-        v = f.createVariable('root_zone', NC_INT, ('root_zone', ))
-        v[:] = np.arange(1, veg_grid['root_depth'].shape[1] + 1)
-        v.long_name = 'root zone'
-
-        v = f.createVariable('month', NC_INT, ('month', ))
-        v[:] = np.arange(1, 13)
-        v.long_name = 'month of year'
-
-        for var, data in veg_grid.items():
-            if var != 'comment':
-                print('writing var: {0} {1}'.format(var, data.shape))
-
-                if veg_grid[var].ndim == 2:
-                    if var  == 'Nveg':
-                        v = f.createVariable(var, NC_INT, dims2,
-                                             fill_value=FILLVALUE_I)
-                    else:
-                        v = f.createVariable(var, NC_DOUBLE, dims2,
-                                             fill_value=FILLVALUE_F)
-                    v[:, :] = data
-
-                elif veg_grid[var].ndim == 3:
-                    mycoords = ('veg_class', ) + dims2
-                    if var in ['overstory', 'Ctype', 'Nscale']:
-                        v = f.createVariable(var, NC_INT, mycoords,
-                                             fill_value=FILLVALUE_I)
-                    else:
-                        v = f.createVariable(var, NC_DOUBLE, mycoords,
-                                             fill_value=FILLVALUE_F)
-                    v[:, :, :] = data
-
-                elif var in ['LAI', 'fcanopy', 'albedo', 'veg_rough',
-                             'displacement']:
-                    mycoords = ('veg_class', 'month') + dims2
-                    v = f.createVariable(var, NC_DOUBLE, mycoords,
-                                         fill_value=FILLVALUE_F)
-                    v[:, :, :, :] = data
-
-                elif veg_grid[var].ndim == 4:
-                    mycoords = ('veg_class', 'root_zone', ) + dims2
-                    v = f.createVariable(var, NC_DOUBLE, mycoords,
-                                         fill_value=FILLVALUE_F)
-                    v[:, :, :, :] = data
-
-                else:
-                    raise ValueError('only able to handle dimensions <=4')
-
-                v.long_name = var
-                try:
-                    v.units = unit.veg_param[var]
-                    v.description = desc.veg_param[var]
-                except KeyError:
-                    lib_var = 'lib_{0}'.format(var)
-                    v.units = unit.veglib[lib_var]
-                    v.description = desc.veglib[lib_var]
-
-                if coordinates:
-                    v.coordinates = coordinates
-
-    if lake_grid:
-        if 'gridcell' in lake_grid:
-            del lake_grid['gridcell']
-
-        f.createDimension('lake_node', lake_grid['basin_depth'].shape[0])
-
-        v = f.createVariable('lake_node', NC_INT, ('lake_node', ))
-        v[:] = np.arange(1, lake_grid['basin_depth'].shape[0] + 1)
-        v.long_name = 'lake basin node'
-
-        for var, data in lake_grid.items():
-            print('writing var: {0} {1}'.format(var, data.shape))
-
-            if lake_grid[var].ndim == 2:
-                if var in ['lake_idx', 'numnod']:
+            elif data.ndim == 2:
+                if var in ['gridcell', 'run_cell', 'fs_active']:
                     v = f.createVariable(var, NC_INT, dims2,
                                          fill_value=FILLVALUE_I)
                 else:
                     v = f.createVariable(var, NC_DOUBLE, dims2,
                                          fill_value=FILLVALUE_F)
-                v[:, :] = data
+                v[:] = data
 
-            elif lake_grid[var].ndim == 3:
-                mycoords = ('lake_node', ) + dims2
-                v = f.createVariable(var, NC_DOUBLE, mycoords,
+            elif data.ndim == 3:
+                v = f.createVariable(var, NC_DOUBLE, layer_dims,
                                      fill_value=FILLVALUE_F)
-                v[:, :, :] = data
-
+                v[:] = data
             else:
-                raise ValueError('only able to handle dimensions <=3')
+                raise IOError('all soil vars should be 2 or 3 dimensions')
 
-            v.long_name = var
-            v.units = unit.lake_param[var]
-            v.description = desc.lake_param[var]
-
+            # add attributes
+            v.units = unit.soil_param[var].encode()
+            v.description = desc.soil_param[var].encode()
+            v.long_name = var.encode()
             if coordinates:
-                v.coordinates = coordinates
+                v.coordinates = coordinates.encode()
 
-    f.close()
+        if snow_grid:
+            try:
+                del snow_grid['gridcell']
+            except:
+                pass
+
+            f.createDimension('snow_band', snow_grid['AreaFract'].shape[0])
+            snow_dims = ('snow_band', ) + dims2
+
+            v = f.createVariable('snow_band', NC_INT, ('snow_band', ))
+            v[:] = np.arange(1, snow_grid['AreaFract'].shape[0] + 1)
+            v.long_name = b'snow band'
+
+            for var, data in snow_grid.items():
+                print('writing var: {0}'.format(var))
+
+                if data.ndim == 2:
+                    v = f.createVariable(var, NC_DOUBLE, dims2,
+                                         fill_value=FILLVALUE_F)
+                    v[:] = data
+                elif data.ndim == 3:
+                    v = f.createVariable(var, NC_DOUBLE, snow_dims,
+                                         fill_value=FILLVALUE_F)
+                    v[:] = data
+                else:
+                    raise IOError('all snow vars should be 2 or 3 dimensions')
+
+                v.units = unit.snow_param[var].encode()
+                v.description = desc.snow_param[var].encode()
+                if coordinates:
+                    v.coordinates = coordinates.encode()
+
+        if veg_grid:
+            try:
+                del veg_grid['gridcell']
+            except:
+                pass
+
+            f.createDimension('veg_class', veg_grid['Cv'].shape[0])
+            f.createDimension('root_zone', veg_grid['root_depth'].shape[1])
+            f.createDimension('month', MONTHS_PER_YEAR)
+
+            v = f.createVariable('veg_class', NC_INT, ('veg_class', ))
+            v[:] = np.arange(1, veg_grid['Cv'].shape[0] + 1)
+            v.long_name = b'Vegetation Class'
+
+            v = f.createVariable('veg_descr', np.dtype(str), ('veg_class', ))
+            v[:] = veg_grid['comment']
+            v.long_name = b'Vegetation Class Description'
+
+            v = f.createVariable('root_zone', NC_INT, ('root_zone', ))
+            v[:] = np.arange(1, veg_grid['root_depth'].shape[1] + 1)
+            v.long_name = b'root zone'
+
+            v = f.createVariable('month', NC_INT, ('month', ))
+            v[:] = np.arange(1, 13)
+            v.long_name = b'month of year'
+
+            for var, data in veg_grid.items():
+                if var != 'comment':
+                    print('writing var: {0} {1}'.format(var, data.shape))
+
+                    if veg_grid[var].ndim == 2:
+                        if var == 'Nveg':
+                            v = f.createVariable(var, NC_INT, dims2,
+                                                 fill_value=FILLVALUE_I)
+                        else:
+                            v = f.createVariable(var, NC_DOUBLE, dims2,
+                                                 fill_value=FILLVALUE_F)
+                    elif veg_grid[var].ndim == 3:
+                        mycoords = ('veg_class', ) + dims2
+                        if var in ['overstory', 'Ctype', 'Nscale']:
+                            v = f.createVariable(var, NC_INT, mycoords,
+                                                 fill_value=FILLVALUE_I)
+                        else:
+                            v = f.createVariable(var, NC_DOUBLE, mycoords,
+                                                 fill_value=FILLVALUE_F)
+                    elif var in ['LAI', 'fcanopy', 'albedo', 'veg_rough',
+                                 'displacement']:
+                        mycoords = ('veg_class', 'month') + dims2
+                        v = f.createVariable(var, NC_DOUBLE, mycoords,
+                                             fill_value=FILLVALUE_F)
+                    elif veg_grid[var].ndim == 4:
+                        mycoords = ('veg_class', 'root_zone', ) + dims2
+                        v = f.createVariable(var, NC_DOUBLE, mycoords,
+                                             fill_value=FILLVALUE_F)
+                    else:
+                        raise ValueError('only able to handle dimensions <=4')
+
+                    v[:] = data
+                    v.long_name = var.encode()
+                    try:
+                        v.units = unit.veg_param[var].encode()
+                        v.description = desc.veg_param[var].encode()
+                    except KeyError:
+                        lib_var = 'lib_{0}'.format(var)
+                        v.units = unit.veglib[lib_var].encode()
+                        v.description = desc.veglib[lib_var].encode()
+
+                    if coordinates:
+                        v.coordinates = coordinates.encode()
+
+        if lake_grid:
+            if 'gridcell' in lake_grid:
+                del lake_grid['gridcell']
+
+            f.createDimension('lake_node', lake_grid['basin_depth'].shape[0])
+
+            v = f.createVariable('lake_node', NC_INT, ('lake_node', ))
+            v[:] = np.arange(1, lake_grid['basin_depth'].shape[0] + 1)
+            v.long_name = b'lake basin node'
+
+            for var, data in lake_grid.items():
+                print('writing var: {0} {1}'.format(var, data.shape))
+
+                if lake_grid[var].ndim == 2:
+                    if var in ['lake_idx', 'numnod']:
+                        v = f.createVariable(var, NC_INT, dims2,
+                                             fill_value=FILLVALUE_I)
+                    else:
+                        v = f.createVariable(var, NC_DOUBLE, dims2,
+                                             fill_value=FILLVALUE_F)
+                    v[:] = data
+
+                elif lake_grid[var].ndim == 3:
+                    mycoords = ('lake_node', ) + dims2
+                    v = f.createVariable(var, NC_DOUBLE, mycoords,
+                                         fill_value=FILLVALUE_F)
+                    v[:] = data
+
+                else:
+                    raise ValueError('only able to handle dimensions <=3')
+
+                v.long_name = var.encode()
+                v.units = unit.lake_param[var].encode()
+                v.description = desc.lake_param[var].encode()
+
+                if coordinates:
+                    v.coordinates = coordinates.encode()
 
     return
 # -------------------------------------------------------------------- #
@@ -1498,8 +1468,8 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
             cv[cell, vind] = temp[1]
 
             tmp = 1 + max_roots * 2
-            root_depth[cell, vind, :] = temp[2:tmp:2]
-            root_fract[cell, vind, :] = temp[3:1+tmp:2]
+            root_depth[cell, vind] = temp[2:tmp:2]
+            root_fract[cell, vind] = temp[3:1+tmp:2]
             tmp += 1
 
             if blowing_snow:
@@ -1513,39 +1483,39 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
             if vegparam_lai:
                 lines[row] = lines[row].strip()
                 line = lines[row].strip('\n').split(' ')
-                lai[cell, vind, :] = np.array(line, dtype=np.float)
+                lai[cell, vind] = np.array(line, dtype=np.float)
                 row += 1
             if vegparam_fcan:
                 lines[row] = lines[row].strip()
                 line = lines[row].strip('\n').split(' ')
-                fcan[cell, vind, :] = np.array(line, dtype=np.float)
+                fcan[cell, vind] = np.array(line, dtype=np.float)
                 row += 1
             if vegparam_albedo:
                 lines[row] = lines[row].strip()
                 line = lines[row].strip('\n').split(' ')
-                albedo[cell, vind, :] = np.array(line, dtype=np.float)
+                albedo[cell, vind] = np.array(line, dtype=np.float)
                 row += 1
         cell += 1
     veg_dict = OrderedDict()
     veg_dict['gridcell'] = gridcel[:cell]
     veg_dict['Nveg'] = nveg[:cell]
-    veg_dict['Cv'] = cv[:cell, :]
-    veg_dict['root_depth'] = root_depth[:cell, :, :]
-    veg_dict['root_fract'] = root_fract[:cell, :, :]
+    veg_dict['Cv'] = cv[:cell]
+    veg_dict['root_depth'] = root_depth[:cell]
+    veg_dict['root_fract'] = root_fract[:cell]
 
     if blowing_snow:
-        veg_dict['sigma_slope'] = sigma_slope[:cell, :]
-        veg_dict['lag_one'] = lag_one[:cell, :]
-        veg_dict['fetch'] = fetch[:cell, :]
+        veg_dict['sigma_slope'] = sigma_slope[:cell]
+        veg_dict['lag_one'] = lag_one[:cell]
+        veg_dict['fetch'] = fetch[:cell]
 
     if vegparam_lai and lai_src == 'FROM_VEGPARAM':
-        veg_dict['LAI'] = lai[:cell, :, :]
+        veg_dict['LAI'] = lai[:cell]
 
     if vegparam_fcan and fcan_src == 'FROM_VEGPARAM':
-        veg_dict['fcanopy'] = fcan[:cell, :, :]
+        veg_dict['fcanopy'] = fcan[:cell]
 
     if vegparam_albedo and alb_src == 'FROM_VEGPARAM':
-        veg_dict['albedo'] = albedo[:cell, :, :]
+        veg_dict['albedo'] = albedo[:cell]
 
     # Make gridcell order match that of soil_dict
     inds = []
@@ -1562,7 +1532,7 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
 
 # -------------------------------------------------------------------- #
 def lake(lake_file, soil_dict, max_numnod=10,
-        cells=None, lake_profile=False):
+         cells=None, lake_profile=False):
     """
     Read the lake file from lakeFile.  Assumes max length for depth-area
     relationship.  Also reorders data to match gridcell order of soil file.
@@ -1631,8 +1601,8 @@ def lake(lake_file, soil_dict, max_numnod=10,
     lake_dict['depth_in'] = depth_in[:cell]
     lake_dict['rpercent'] = rpercent[:cell]
     if lake_profile:
-        lake_dict['basin_depth'] = basin_depth[:cell, :]
-        lake_dict['basin_area'] = basin_area[:cell, :]
+        lake_dict['basin_depth'] = basin_depth[:cell]
+        lake_dict['basin_area'] = basin_area[:cell]
     else:
         lake_dict['basin_depth'] = basin_depth[:cell]
         lake_dict['basin_area'] = basin_area[:cell]
@@ -1648,3 +1618,10 @@ def lake(lake_file, soil_dict, max_numnod=10,
 
     return new_lake_dict
 # -------------------------------------------------------------------- #
+
+
+def maybe_encode(string, encoding='ascii'):
+    try:
+        return string.encode(encoding)
+    except UnicodeEncodeError:
+        return string

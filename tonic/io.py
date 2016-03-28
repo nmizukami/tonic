@@ -107,7 +107,7 @@ def read_netcdf(nc_file, variables=[], coords=False, verbose=True):
     f = Dataset(nc_file, 'r')
 
     if variables == []:
-        variables = f.variables.keys()
+        variables = list(f.variables.keys())
 
     if verbose:
         print('Reading input data variables: '
