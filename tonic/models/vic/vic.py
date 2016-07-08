@@ -11,6 +11,7 @@ from datetime import datetime
 import pandas as pd
 
 default_vic_valgrind_error_code = 125
+default_vic_valgrind_supressions_path = 'vic_valgrind_suppressions.supp'
 
 
 # -------------------------------------------------------------------- #
