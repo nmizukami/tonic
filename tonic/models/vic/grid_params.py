@@ -681,10 +681,9 @@ def make_grid(grid_file, soil_file, snow_file, vegl_file, veg_file,
         snow_dict = False
 
     if vegl_file:
-        veglib_dict, lib_bare_idx = veg_class(vegl_file,
-                                              veglib_photo=veglib_photo,
-                                    c=Cols(veglib_fcan=veglib_fcan,
-                                           veglib_photo=veglib_photo))
+        veglib_dict, lib_bare_idx = veg_class(
+            vegl_file, veglib_photo=veglib_photo,
+            c=Cols(veglib_fcan=veglib_fcan, veglib_photo=veglib_photo))
         veg_classes = len(veglib_dict['Veg_class'])
     else:
         veglib_dict = False
@@ -1196,8 +1195,11 @@ def write_netcdf(myfile, target_attrs, target_grid,
             raise IOError('all soil vars should be 2 or 3 dimensions')
 
         # add attributes
-        v.units = unit.soil_param[var]
-        v.description = desc.soil_param[var]
+        try:
+            v.units = unit.soil_param[var]
+            v.description = desc.soil_param[var]
+        except KeyError:
+            pass
         v.long_name = var
         if coordinates:
             v.coordinates = coordinates
@@ -1265,7 +1267,7 @@ def write_netcdf(myfile, target_attrs, target_grid,
                 print('writing var: {0} {1}'.format(var, data.shape))
 
                 if veg_grid[var].ndim == 2:
-                    if var  == 'Nveg':
+                    if var == 'Nveg':
                         v = f.createVariable(var, NC_INT, dims2,
                                              fill_value=FILLVALUE_I)
                     else:
@@ -1373,6 +1375,10 @@ def soil(in_file, c=Cols(nlayers=3, organic_fract=False,
         else:
             soil_dict[var] = np.squeeze(data[:, columns])
 
+    inds = np.argsort(soil_dict['gridcell'])
+    for var, vals in soil_dict.items():
+        soil_dict[var] = vals[inds]
+
     return soil_dict
 # -------------------------------------------------------------------- #
 
@@ -1396,6 +1402,7 @@ def snow(snow_file, soil_dict, c=Cols(snow_bands=5)):
     target = soil_dict['gridcell'].argsort()
     indexes = target[np.searchsorted(soil_dict['gridcell'][target],
                                      snow_dict['cellnum'])]
+    indexes = np.argsort(snow_dict['cellnum'].squeeze())
 
     for var in snow_dict:
         snow_dict[var] = np.squeeze(snow_dict[var][indexes])
@@ -1485,14 +1492,14 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
     row = 0
     cell = 0
     while row < len(lines):
-        line = lines[row].strip('\n').split(' ')
+        line = lines[row].strip('\n').split()
         gridcel[cell], nveg[cell] = np.array(line).astype(int)
         numrows = nveg[cell] * lfactor + row + 1
         row += 1
 
         while row < numrows:
             lines[row] = lines[row].strip()
-            line = lines[row].strip('\n').split(' ')
+            line = lines[row].strip('\n').split()
             temp = np.array(line).astype(float)
             vind = int(temp[0]) - 1
             cv[cell, vind] = temp[1]
@@ -1512,17 +1519,17 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
 
             if vegparam_lai:
                 lines[row] = lines[row].strip()
-                line = lines[row].strip('\n').split(' ')
+                line = lines[row].strip('\n').split()
                 lai[cell, vind, :] = np.array(line, dtype=np.float)
                 row += 1
             if vegparam_fcan:
                 lines[row] = lines[row].strip()
-                line = lines[row].strip('\n').split(' ')
+                line = lines[row].strip('\n').split()
                 fcan[cell, vind, :] = np.array(line, dtype=np.float)
                 row += 1
             if vegparam_albedo:
                 lines[row] = lines[row].strip()
-                line = lines[row].strip('\n').split(' ')
+                line = lines[row].strip('\n').split()
                 albedo[cell, vind, :] = np.array(line, dtype=np.float)
                 row += 1
         cell += 1
@@ -1547,22 +1554,18 @@ def veg(veg_file, soil_dict, veg_classes=11, max_roots=3,
     if vegparam_albedo and alb_src == 'FROM_VEGPARAM':
         veg_dict['albedo'] = albedo[:cell, :, :]
 
-    # Make gridcell order match that of soil_dict
-    inds = []
-    for sn in soil_dict['gridcell']:
-        inds.append(np.nonzero(veg_dict['gridcell'] == sn))
+    indexes = np.argsort(veg_dict['gridcell'].squeeze())
 
-    new_veg_dict = OrderedDict()
     for var in veg_dict:
-        new_veg_dict[var] = np.squeeze([veg_dict[var][i] for i in inds])
+        veg_dict[var] = np.squeeze(veg_dict[var][indexes])
 
-    return new_veg_dict
+    return veg_dict
 # -------------------------------------------------------------------- #
 
 
 # -------------------------------------------------------------------- #
 def lake(lake_file, soil_dict, max_numnod=10,
-        cells=None, lake_profile=False):
+         cells=None, lake_profile=False):
     """
     Read the lake file from lakeFile.  Assumes max length for depth-area
     relationship.  Also reorders data to match gridcell order of soil file.
@@ -1593,7 +1596,7 @@ def lake(lake_file, soil_dict, max_numnod=10,
     row = 0
     cell = 0
     while row < len(lines):
-        line = lines[row].strip('\n').split(' ')
+        line = lines[row].strip('\n').split()
         gridcel[cell], lake_idx[cell], numnod[cell] = np.array(line[0:3],
                                                                dtype=np.int)
         temp = np.array(line, dtype=np.float)
@@ -1608,7 +1611,7 @@ def lake(lake_file, soil_dict, max_numnod=10,
 
         while row < numrows:
             lines[row] = lines[row].strip()
-            line = lines[row].strip('\n').split(' ')
+            line = lines[row].strip('\n').split()
             temp = np.array(line, dtype=np.float)
 
             if lake_profile:
