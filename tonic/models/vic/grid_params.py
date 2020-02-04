@@ -111,7 +111,7 @@ class Cols(object):
 
         varnames = ['bubble', 'quartz', 'bulk_density', 'soil_density']
         if organic_fract:
-            varnames.append(['organic', 'bulk_dens_org', 'soil_dens_org'])
+            varnames.extend(['organic', 'bulk_dens_org', 'soil_dens_org'])
         for var in varnames:
             self.soil_param[var] = np.arange(i, i + nlayers)
             i += nlayers
